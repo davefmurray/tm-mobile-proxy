@@ -1,0 +1,23 @@
+{
+  "name": "tm-mobile-proxy",
+  "version": "1.0.0",
+  "description": "Lightweight proxy server for Tekmetric mobile app - runs on shop PC to prevent JWT token blacklisting",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "keywords": [
+    "tekmetric",
+    "proxy",
+    "jwt",
+    "mobile"
+  ],
+  "author": "",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+  }
+}
