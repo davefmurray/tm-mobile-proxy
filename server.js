@@ -225,40 +225,21 @@ const server = http.createServer(async (req, res) => {
         return sendJSON(res, 503, { error: 'No JWT token available for this shop' });
       }
 
-      let ro = null;
-
-      // Try 1: Search by RO number (e.g., "24715")
-      const roByNumberResponse = await proxyToTM(
-        `/api/shop/${shopId}/repair-order?number=${roNumber}`,
+      // Get RO by ID (roNumber is actually the RO ID from URL)
+      const roResponse = await proxyToTM(
+        `/api/shop/${shopId}/repair-order/${roNumber}`,
         'GET',
         null,
         jwtToken
       );
 
-      if (roByNumberResponse.status === 200) {
-        const roData = JSON.parse(roByNumberResponse.body);
-        ro = roData.content?.[0];
+      if (roResponse.status !== 200) {
+        return sendJSON(res, roResponse.status, { error: `RO not found (ID: ${roNumber})` });
       }
 
-      // Try 2: If not found and looks like an ID (large number), try direct ID lookup
-      if (!ro && roNumber.length >= 8) {
-        const roByIdResponse = await proxyToTM(
-          `/api/repair-order/${roNumber}`,
-          'GET',
-          null,
-          jwtToken
-        );
+      const ro = JSON.parse(roResponse.body);
 
-        if (roByIdResponse.status === 200) {
-          ro = JSON.parse(roByIdResponse.body);
-        }
-      }
-
-      if (!ro) {
-        return sendJSON(res, 404, { error: 'RO not found. Try entering RO ID (from URL) or RO Number (e.g., 24715)' });
-      }
-
-      // Get inspections (note: plural "repair-orders" and "inspections")
+      // Get inspections using plural endpoint
       const inspectionResponse = await proxyToTM(
         `/api/shop/${shopId}/repair-orders/${ro.id}/inspections`,
         'GET',
@@ -273,19 +254,19 @@ const server = http.createServer(async (req, res) => {
       const inspections = JSON.parse(inspectionResponse.body);
       const tasks = [];
 
-      // Flatten inspection items
+      // Flatten inspection tasks (TM uses different structure)
       for (const inspection of inspections) {
-        if (inspection.itemGroups) {
-          for (const group of inspection.itemGroups) {
-            if (group.items) {
-              for (const item of group.items) {
+        if (inspection.inspectionTasks) {
+          for (const taskGroup of inspection.inspectionTasks) {
+            if (taskGroup.tasks) {
+              for (const task of taskGroup.tasks) {
                 tasks.push({
-                  id: item.id,
+                  id: task.id,
                   inspectionId: inspection.id,
-                  name: item.name,
-                  group: group.name,
-                  currentRating: item.rating,
-                  currentFinding: item.finding
+                  name: task.name,
+                  group: task.inspectionGroup || taskGroup.title,
+                  currentRating: task.inspectionRating,
+                  currentFinding: task.finding
                 });
               }
             }
@@ -295,6 +276,7 @@ const server = http.createServer(async (req, res) => {
 
       return sendJSON(res, 200, {
         roId: ro.id,
+        roNumber: ro.repairOrderNumber,
         customer: ro.customer?.firstName + ' ' + ro.customer?.lastName,
         vehicle: `${ro.vehicle?.year} ${ro.vehicle?.make} ${ro.vehicle?.model}`,
         tasks
