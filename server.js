@@ -258,13 +258,17 @@ const server = http.createServer(async (req, res) => {
         return sendJSON(res, 404, { error: 'RO not found. Try entering RO ID (from URL) or RO Number (e.g., 24715)' });
       }
 
-      // Get inspections
+      // Get inspections (note: plural "repair-orders" and "inspections")
       const inspectionResponse = await proxyToTM(
-        `/api/repair-order/${ro.id}/inspection`,
+        `/api/shop/${shopId}/repair-orders/${ro.id}/inspections`,
         'GET',
         null,
         jwtToken
       );
+
+      if (inspectionResponse.status !== 200) {
+        return sendJSON(res, inspectionResponse.status, { error: 'Failed to fetch inspections' });
+      }
 
       const inspections = JSON.parse(inspectionResponse.body);
       const tasks = [];
