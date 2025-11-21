@@ -282,8 +282,8 @@ const server = http.createServer(async (req, res) => {
       return sendJSON(res, 200, {
         roId: ro.id,
         roNumber: ro.repairOrderNumber,
-        customer: ro.customer?.fullName || (ro.customer?.firstName + ' ' + ro.customer?.lastName) || 'Unknown',
-        vehicle: ro.vehicle?.description || ro.vehicle?.shortDescription || `${ro.vehicle?.year || ''} ${ro.vehicle?.make || ''} ${ro.vehicle?.model || ''}`.trim() || 'Unknown',
+        customer: ro.customerFullName || ro.customer?.fullName || (ro.customer?.firstName + ' ' + ro.customer?.lastName) || 'Unknown',
+        vehicle: ro.vehicleDescription || ro.vehicle?.description || ro.vehicle?.shortDescription || `${ro.vehicle?.year || ''} ${ro.vehicle?.make || ''} ${ro.vehicle?.model || ''}`.trim() || 'Unknown',
         tasks
       });
     }
