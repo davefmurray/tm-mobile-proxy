@@ -16,15 +16,87 @@ const { URL } = require('url');
 // Configuration
 const PORT = process.env.PORT || 3001;
 const TM_BASE_URL = 'https://shop.tekmetric.com';
-const JWT_TOKEN = process.env.TM_JWT_TOKEN || '';
+const SUPABASE_URL = process.env.SUPABASE_URL || '';
+const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || '';
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '*').split(',');
+const TOKEN_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
+// Token cache: { shopId: { token, fetchedAt, expiresAt } }
+const tokenCache = {};
 
 console.log('🚀 TM Mobile Proxy Server');
 console.log('========================');
 console.log(`Port: ${PORT}`);
-console.log(`JWT Token: ${JWT_TOKEN ? '✅ Set' : '❌ Missing'}`);
+console.log(`Supabase: ${SUPABASE_URL ? '✅ Configured' : '❌ Missing'}`);
 console.log(`Allowed Origins: ${ALLOWED_ORIGINS.join(', ')}`);
 console.log('');
+
+// Helper: Get JWT token from Supabase (with caching)
+async function getJWTToken(shopId) {
+  // Check cache first (refresh every 5 minutes)
+  const cached = tokenCache[shopId];
+  if (cached && Date.now() - cached.fetchedAt < TOKEN_CACHE_TTL) {
+    console.log(`🔑 Using cached token for shop ${shopId}`);
+    return cached.token;
+  }
+
+  console.log(`🔄 Fetching fresh token for shop ${shopId} from Supabase...`);
+
+  try {
+    const url = new URL('/rest/v1/shop_tokens', SUPABASE_URL);
+    url.searchParams.set('shop_id', `eq.${shopId}`);
+    url.searchParams.set('select', 'token,expires_at');
+
+    const response = await new Promise((resolve, reject) => {
+      const req = https.request(url, {
+        method: 'GET',
+        headers: {
+          'apikey': SUPABASE_ANON_KEY,
+          'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+          'Content-Type': 'application/json'
+        }
+      }, resolve);
+
+      req.on('error', reject);
+      req.end();
+    });
+
+    let data = '';
+    response.on('data', chunk => data += chunk);
+
+    await new Promise((resolve) => response.on('end', resolve));
+
+    const tokens = JSON.parse(data);
+
+    if (!tokens || tokens.length === 0) {
+      console.error(`❌ No token found for shop ${shopId}`);
+      return null;
+    }
+
+    const tokenData = tokens[0];
+    const token = tokenData.token;
+    const expiresAt = tokenData.expires_at ? new Date(tokenData.expires_at) : null;
+
+    // Check if token is expired
+    if (expiresAt && expiresAt < new Date()) {
+      console.warn(`⚠️  Token for shop ${shopId} is expired! Extension should refresh it.`);
+    }
+
+    // Cache the token
+    tokenCache[shopId] = {
+      token,
+      fetchedAt: Date.now(),
+      expiresAt
+    };
+
+    console.log(`✅ Token fetched for shop ${shopId} (expires: ${expiresAt ? expiresAt.toISOString() : 'unknown'})`);
+    return token;
+
+  } catch (error) {
+    console.error(`❌ Error fetching token for shop ${shopId}:`, error.message);
+    return null;
+  }
+}
 
 // Helper: Parse JSON body
 function parseBody(req) {
@@ -43,7 +115,7 @@ function parseBody(req) {
 }
 
 // Helper: Forward request to TM API
-function proxyToTM(tmPath, method, body, headers = {}) {
+function proxyToTM(tmPath, method, body, jwtToken, headers = {}) {
   return new Promise((resolve, reject) => {
     const url = new URL(tmPath, TM_BASE_URL);
 
@@ -54,7 +126,7 @@ function proxyToTM(tmPath, method, body, headers = {}) {
       method: method,
       headers: {
         'Content-Type': 'application/json',
-        'x-auth-token': JWT_TOKEN,
+        'x-auth-token': jwtToken,
         'accept': 'application/json',
         ...headers
       }
@@ -124,16 +196,17 @@ const server = http.createServer(async (req, res) => {
       return sendJSON(res, 200, {
         status: 'healthy',
         service: 'tm-mobile-proxy',
-        version: '1.0.0',
-        jwt_configured: !!JWT_TOKEN,
+        version: '2.0.0',
+        supabase_configured: !!(SUPABASE_URL && SUPABASE_ANON_KEY),
+        cached_shops: Object.keys(tokenCache).length,
         uptime: process.uptime()
       });
     }
 
-    // JWT token validation
-    if (!JWT_TOKEN) {
+    // Supabase validation
+    if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
       return sendJSON(res, 503, {
-        error: 'JWT token not configured. Set TM_JWT_TOKEN environment variable.'
+        error: 'Supabase not configured. Set SUPABASE_URL and SUPABASE_ANON_KEY environment variables.'
       });
     }
 
@@ -146,10 +219,18 @@ const server = http.createServer(async (req, res) => {
         return sendJSON(res, 400, { error: 'Missing shopId or roNumber' });
       }
 
+      // Get JWT token from Supabase
+      const jwtToken = await getJWTToken(shopId);
+      if (!jwtToken) {
+        return sendJSON(res, 503, { error: 'No JWT token available for this shop' });
+      }
+
       // Get RO ID from RO number
       const roResponse = await proxyToTM(
         `/api/shop/${shopId}/repair-order?number=${roNumber}`,
-        'GET'
+        'GET',
+        null,
+        jwtToken
       );
 
       if (roResponse.status !== 200) {
@@ -166,7 +247,9 @@ const server = http.createServer(async (req, res) => {
       // Get inspections
       const inspectionResponse = await proxyToTM(
         `/api/repair-order/${ro.id}/inspection`,
-        'GET'
+        'GET',
+        null,
+        jwtToken
       );
 
       const inspections = JSON.parse(inspectionResponse.body);
@@ -203,10 +286,16 @@ const server = http.createServer(async (req, res) => {
     // Route: Upload video (presigned URL request)
     if (path === '/api/upload-video/presigned' && req.method === 'POST') {
       const body = await parseBody(req);
-      const { roId, inspectionId, itemId, fileName, fileType } = body;
+      const { roId, inspectionId, itemId, fileName, fileType, shopId } = body;
 
-      if (!roId || !inspectionId || !itemId) {
-        return sendJSON(res, 400, { error: 'Missing required fields' });
+      if (!roId || !inspectionId || !itemId || !shopId) {
+        return sendJSON(res, 400, { error: 'Missing required fields (need shopId)' });
+      }
+
+      // Get JWT token from Supabase
+      const jwtToken = await getJWTToken(shopId);
+      if (!jwtToken) {
+        return sendJSON(res, 503, { error: 'No JWT token available for this shop' });
       }
 
       const result = await proxyToTM(
@@ -216,7 +305,8 @@ const server = http.createServer(async (req, res) => {
           mediaType: 'VIDEO',
           fileType: fileType || 'video/webm',
           fileName: fileName || `inspection-${Date.now()}.webm`
-        }
+        },
+        jwtToken
       );
 
       return sendJSON(res, result.status, JSON.parse(result.body));
@@ -225,15 +315,23 @@ const server = http.createServer(async (req, res) => {
     // Route: Confirm video upload
     if (path === '/api/upload-video/confirm' && req.method === 'POST') {
       const body = await parseBody(req);
-      const { roId, inspectionId, itemId, mediaId } = body;
+      const { roId, inspectionId, itemId, mediaId, shopId } = body;
 
-      if (!roId || !inspectionId || !itemId || !mediaId) {
-        return sendJSON(res, 400, { error: 'Missing required fields' });
+      if (!roId || !inspectionId || !itemId || !mediaId || !shopId) {
+        return sendJSON(res, 400, { error: 'Missing required fields (need shopId)' });
+      }
+
+      // Get JWT token from Supabase
+      const jwtToken = await getJWTToken(shopId);
+      if (!jwtToken) {
+        return sendJSON(res, 503, { error: 'No JWT token available for this shop' });
       }
 
       const result = await proxyToTM(
         `/api/repair-order/${roId}/inspection/${inspectionId}/item/${itemId}/media/${mediaId}/confirm`,
-        'POST'
+        'POST',
+        null,
+        jwtToken
       );
 
       return sendJSON(res, result.status, JSON.parse(result.body));
@@ -242,16 +340,23 @@ const server = http.createServer(async (req, res) => {
     // Route: Update inspection item (rating + finding)
     if (path === '/api/update-inspection-item' && req.method === 'POST') {
       const body = await parseBody(req);
-      const { roId, inspectionId, itemId, rating, finding } = body;
+      const { roId, inspectionId, itemId, rating, finding, shopId } = body;
 
-      if (!roId || !inspectionId || !itemId) {
-        return sendJSON(res, 400, { error: 'Missing required fields' });
+      if (!roId || !inspectionId || !itemId || !shopId) {
+        return sendJSON(res, 400, { error: 'Missing required fields (need shopId)' });
+      }
+
+      // Get JWT token from Supabase
+      const jwtToken = await getJWTToken(shopId);
+      if (!jwtToken) {
+        return sendJSON(res, 503, { error: 'No JWT token available for this shop' });
       }
 
       const result = await proxyToTM(
         `/api/repair-order/${roId}/inspection/${inspectionId}/item/${itemId}`,
         'PUT',
-        { rating, finding }
+        { rating, finding },
+        jwtToken
       );
 
       return sendJSON(res, result.status, JSON.parse(result.body));
@@ -259,10 +364,21 @@ const server = http.createServer(async (req, res) => {
 
     // Route: Generic proxy (for any TM API endpoint)
     if (path.startsWith('/api/tm/')) {
+      const shopId = url.searchParams.get('shopId');
+      if (!shopId) {
+        return sendJSON(res, 400, { error: 'Missing shopId parameter' });
+      }
+
+      // Get JWT token from Supabase
+      const jwtToken = await getJWTToken(shopId);
+      if (!jwtToken) {
+        return sendJSON(res, 503, { error: 'No JWT token available for this shop' });
+      }
+
       const tmPath = path.replace('/api/tm', '/api');
       const body = req.method !== 'GET' ? await parseBody(req) : null;
 
-      const result = await proxyToTM(tmPath, req.method, body);
+      const result = await proxyToTM(tmPath, req.method, body, jwtToken);
 
       res.writeHead(result.status, {
         'Content-Type': result.headers['content-type'] || 'application/json',
