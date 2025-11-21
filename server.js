@@ -291,10 +291,10 @@ const server = http.createServer(async (req, res) => {
     // Route: Upload video (presigned URL request)
     if (path === '/api/upload-video/presigned' && req.method === 'POST') {
       const body = await parseBody(req);
-      const { roId, inspectionId, itemId, fileName, fileType, shopId } = body;
+      const { roId, inspectionId, taskId, fileName, fileType, shopId } = body;
 
-      if (!roId || !inspectionId || !itemId || !shopId) {
-        return sendJSON(res, 400, { error: 'Missing required fields (need shopId)' });
+      if (!roId || !inspectionId || !taskId || !shopId) {
+        return sendJSON(res, 400, { error: 'Missing required fields (need shopId, roId, inspectionId, taskId)' });
       }
 
       // Get JWT token from Supabase
@@ -303,13 +303,19 @@ const server = http.createServer(async (req, res) => {
         return sendJSON(res, 503, { error: 'No JWT token available for this shop' });
       }
 
+      // Use correct TM video upload endpoint from docs
       const result = await proxyToTM(
-        `/api/repair-order/${roId}/inspection/${inspectionId}/item/${itemId}/media`,
+        `/media/create-video-upload-url`,
         'POST',
         {
-          mediaType: 'VIDEO',
-          fileType: fileType || 'video/webm',
-          fileName: fileName || `inspection-${Date.now()}.webm`
+          files: [{
+            name: fileName || `inspection-${Date.now()}.webm`,
+            mimetype: fileType || 'video/webm'
+          }],
+          shopId: parseInt(shopId),
+          repairOrderId: parseInt(roId),
+          roInspectionId: parseInt(inspectionId),
+          roInspectionTaskId: parseInt(taskId)
         },
         jwtToken
       );
@@ -317,38 +323,16 @@ const server = http.createServer(async (req, res) => {
       return sendJSON(res, result.status, JSON.parse(result.body));
     }
 
-    // Route: Confirm video upload
-    if (path === '/api/upload-video/confirm' && req.method === 'POST') {
-      const body = await parseBody(req);
-      const { roId, inspectionId, itemId, mediaId, shopId } = body;
+    // Route: No separate confirm needed for videos - they auto-process after S3 upload
+    // Video upload is complete after uploading to S3 presigned URL
 
-      if (!roId || !inspectionId || !itemId || !mediaId || !shopId) {
-        return sendJSON(res, 400, { error: 'Missing required fields (need shopId)' });
-      }
-
-      // Get JWT token from Supabase
-      const jwtToken = await getJWTToken(shopId);
-      if (!jwtToken) {
-        return sendJSON(res, 503, { error: 'No JWT token available for this shop' });
-      }
-
-      const result = await proxyToTM(
-        `/api/repair-order/${roId}/inspection/${inspectionId}/item/${itemId}/media/${mediaId}/confirm`,
-        'POST',
-        null,
-        jwtToken
-      );
-
-      return sendJSON(res, result.status, JSON.parse(result.body));
-    }
-
-    // Route: Update inspection item (rating + finding)
+    // Route: Update inspection task (rating + finding)
     if (path === '/api/update-inspection-item' && req.method === 'POST') {
       const body = await parseBody(req);
-      const { roId, inspectionId, itemId, rating, finding, shopId } = body;
+      const { roId, inspectionId, taskId, task, rating, finding, shopId } = body;
 
-      if (!roId || !inspectionId || !itemId || !shopId) {
-        return sendJSON(res, 400, { error: 'Missing required fields (need shopId)' });
+      if (!roId || !inspectionId || !taskId || !shopId) {
+        return sendJSON(res, 400, { error: 'Missing required fields (need shopId, roId, inspectionId, taskId)' });
       }
 
       // Get JWT token from Supabase
@@ -357,10 +341,31 @@ const server = http.createServer(async (req, res) => {
         return sendJSON(res, 503, { error: 'No JWT token available for this shop' });
       }
 
+      // Build complete task object for update
+      const taskUpdate = {
+        id: parseInt(taskId),
+        name: task?.name || 'Inspection Item',
+        inspectionRating: rating ? {
+          id: rating,
+          code: rating === 3 ? 'RQRSATTN' : rating === 2 ? 'MAYRQRATTN' : 'GOOD',
+          name: rating === 3 ? 'Requires Immediate Attention' : rating === 2 ? 'May Require Attention' : 'Good'
+        } : null,
+        finding: finding || '',
+        inspectionGroup: task?.inspectionGroup || '',
+        groupSortOrder: task?.groupSortOrder || 0,
+        reported: false,
+        externalImages: task?.externalImages || [],
+        cannedJob: task?.cannedJob || null,
+        inspectionTaskId: task?.inspectionTaskId || null,
+        potentialFindingsToSelect: null,
+        motoVisualsAnimationId: null,
+        images: null
+      };
+
       const result = await proxyToTM(
-        `/api/repair-order/${roId}/inspection/${inspectionId}/item/${itemId}`,
+        `/api/shop/${shopId}/repair-orders/${roId}/inspections/${inspectionId}/tasks/${taskId}`,
         'PUT',
-        { rating, finding },
+        taskUpdate,
         jwtToken
       );
 
