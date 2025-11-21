@@ -45,7 +45,7 @@ async function getJWTToken(shopId) {
   try {
     const url = new URL('/rest/v1/shop_tokens', SUPABASE_URL);
     url.searchParams.set('shop_id', `eq.${shopId}`);
-    url.searchParams.set('select', 'token,expires_at');
+    url.searchParams.set('select', 'jwt_token,expires_at');
 
     const response = await new Promise((resolve, reject) => {
       const req = https.request(url, {
@@ -74,7 +74,7 @@ async function getJWTToken(shopId) {
     }
 
     const tokenData = tokens[0];
-    const token = tokenData.token;
+    const token = tokenData.jwt_token;
     const expiresAt = tokenData.expires_at ? new Date(tokenData.expires_at) : null;
 
     // Check if token is expired
