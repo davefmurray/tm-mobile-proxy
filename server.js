@@ -225,19 +225,24 @@ const server = http.createServer(async (req, res) => {
         return sendJSON(res, 503, { error: 'No JWT token available for this shop' });
       }
 
-      // Get RO by ID (roNumber is actually the RO ID from URL)
+      // Search for RO by number (works with both RO number like "24715" and RO ID)
       const roResponse = await proxyToTM(
-        `/api/shop/${shopId}/repair-order/${roNumber}`,
+        `/api/shop/${shopId}/repair-orders?search=${roNumber}&size=10`,
         'GET',
         null,
         jwtToken
       );
 
       if (roResponse.status !== 200) {
-        return sendJSON(res, roResponse.status, { error: `RO not found (ID: ${roNumber})` });
+        return sendJSON(res, roResponse.status, { error: `Failed to search for RO #${roNumber}` });
       }
 
-      const ro = JSON.parse(roResponse.body);
+      const roData = JSON.parse(roResponse.body);
+      const ro = roData.content?.find((r) => r.repairOrderNumber.toString() === roNumber);
+
+      if (!ro) {
+        return sendJSON(res, 404, { error: `RO #${roNumber} not found` });
+      }
 
       // Get inspections using plural endpoint
       const inspectionResponse = await proxyToTM(
