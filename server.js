@@ -225,23 +225,37 @@ const server = http.createServer(async (req, res) => {
         return sendJSON(res, 503, { error: 'No JWT token available for this shop' });
       }
 
-      // Get RO ID from RO number
-      const roResponse = await proxyToTM(
+      let ro = null;
+
+      // Try 1: Search by RO number (e.g., "24715")
+      const roByNumberResponse = await proxyToTM(
         `/api/shop/${shopId}/repair-order?number=${roNumber}`,
         'GET',
         null,
         jwtToken
       );
 
-      if (roResponse.status !== 200) {
-        return sendJSON(res, roResponse.status, { error: 'RO not found' });
+      if (roByNumberResponse.status === 200) {
+        const roData = JSON.parse(roByNumberResponse.body);
+        ro = roData.content?.[0];
       }
 
-      const roData = JSON.parse(roResponse.body);
-      const ro = roData.content?.[0];
+      // Try 2: If not found and looks like an ID (large number), try direct ID lookup
+      if (!ro && roNumber.length >= 8) {
+        const roByIdResponse = await proxyToTM(
+          `/api/repair-order/${roNumber}`,
+          'GET',
+          null,
+          jwtToken
+        );
+
+        if (roByIdResponse.status === 200) {
+          ro = JSON.parse(roByIdResponse.body);
+        }
+      }
 
       if (!ro) {
-        return sendJSON(res, 404, { error: 'RO not found' });
+        return sendJSON(res, 404, { error: 'RO not found. Try entering RO ID (from URL) or RO Number (e.g., 24715)' });
       }
 
       // Get inspections
