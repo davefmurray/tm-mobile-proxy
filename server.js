@@ -270,8 +270,16 @@ const server = http.createServer(async (req, res) => {
                   inspectionId: inspection.id,
                   name: task.name,
                   group: task.inspectionGroup || taskGroup.title,
+                  groupSortOrder: task.groupSortOrder || 0,
                   currentRating: task.inspectionRating,
-                  currentFinding: task.finding
+                  currentFinding: task.finding,
+                  inspectionTaskId: task.inspectionTaskId,  // CRITICAL for media linkage!
+                  reported: task.reported || false,
+                  externalImages: task.externalImages || [],
+                  cannedJob: task.cannedJob || null,
+                  potentialFindingsToSelect: task.potentialFindingsToSelect || null,
+                  motoVisualsAnimationId: task.motoVisualsAnimationId || null,
+                  images: task.images || null
                 });
               }
             }
@@ -341,7 +349,7 @@ const server = http.createServer(async (req, res) => {
         return sendJSON(res, 503, { error: 'No JWT token available for this shop' });
       }
 
-      // Build complete task object for update
+      // Build complete task object for update (per upload-isolation-a.js working script)
       const taskUpdate = {
         id: parseInt(taskId),
         name: task?.name || 'Inspection Item',
@@ -349,17 +357,17 @@ const server = http.createServer(async (req, res) => {
           id: rating,
           code: rating === 3 ? 'RQRSATTN' : rating === 2 ? 'MAYRQRATTN' : 'GOOD',
           name: rating === 3 ? 'Requires Immediate Attention' : rating === 2 ? 'May Require Attention' : 'Good'
-        } : null,
+        } : task?.currentRating || null,
         finding: finding || '',
-        inspectionGroup: task?.inspectionGroup || '',
+        inspectionGroup: task?.group || task?.inspectionGroup || '',
         groupSortOrder: task?.groupSortOrder || 0,
-        reported: false,
+        reported: true,  // CRITICAL: Must be true to show video/photos in TM UI!
         externalImages: task?.externalImages || [],
         cannedJob: task?.cannedJob || null,
-        inspectionTaskId: task?.inspectionTaskId || null,
-        potentialFindingsToSelect: null,
-        motoVisualsAnimationId: null,
-        images: null
+        inspectionTaskId: task?.inspectionTaskId,  // CRITICAL: Required for media linkage!
+        potentialFindingsToSelect: task?.potentialFindingsToSelect || null,
+        motoVisualsAnimationId: task?.motoVisualsAnimationId || null,
+        images: task?.images || null
       };
 
       const result = await proxyToTM(
